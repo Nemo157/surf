@@ -13,6 +13,31 @@ static SUPPORTED_ENCODINGS: &str = "gzip, br, deflate, zstd";
 #[derive(Debug)]
 pub struct Compression;
 
+use std::{pin::Pin, task::{Context, Poll}, io, any::type_name};
+
+struct Dbg<T>(T);
+
+impl<T: futures::io::AsyncRead> futures::io::AsyncRead for Dbg<T> {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<io::Result<usize>> {
+        let reader = unsafe { Pin::new_unchecked(&mut self.get_unchecked_mut().0) };
+        let res = dbg!((type_name::<T>(), reader.poll_read(cx, buf))).1?;
+        dbg!(std::str::from_utf8(buf));
+        res.map(Ok)
+    }
+}
+
+impl<T: futures::io::AsyncBufRead> futures::io::AsyncBufRead for Dbg<T> {
+    fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<&[u8]>> {
+        let reader = unsafe { Pin::new_unchecked(&mut self.get_unchecked_mut().0) };
+        dbg!((type_name::<T>(), reader.poll_fill_buf(cx))).1
+    }
+
+    fn consume(self: Pin<&mut Self>, amt: usize) {
+        let reader = unsafe { Pin::new_unchecked(&mut self.get_unchecked_mut().0) };
+        dbg!((type_name::<T>(), reader.consume(dbg!(amt)))).1
+    }
+}
+
 impl Compression {
     pub fn new() -> Self {
         Self {}
@@ -30,6 +55,7 @@ impl Compression {
     }
 
     async fn decode(&self, req: &mut Response) -> Result<(),  Exception> {
+        dbg!(req.headers());
         let encodings = if let Some(hval) = req.headers().get(CONTENT_ENCODING.as_str()) {
             let hval = match hval.to_str() {
                 Ok(hval) => hval,
@@ -52,7 +78,7 @@ impl Compression {
             match encoding {
                 Encoding::Gzip => {
                     let body = std::mem::replace(req.body_mut(), Body::empty());
-                    let async_decoder = GzipDecoder::new(BufReader::new(body));
+                    let async_decoder = Dbg(GzipDecoder::new(Dbg(BufReader::new(Dbg(body)))));
                     *req.body_mut() = Body::from_reader(async_decoder);
                 }
                 Encoding::Deflate => {
